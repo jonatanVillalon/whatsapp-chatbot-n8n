@@ -1,0 +1,585 @@
+{
+  "name": "Whatsapp Chatbot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -848,
+        240
+      ],
+      "id": "f423cf71-fefc-4a38-8426-56575f0e085c",
+      "name": "Webhook",
+      "webhookId": "f8f7853d-584e-4512-8c15-669296731c6c"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst agentResponse = input.output || input.fallbackResponse || input.text || 'Lo siento, no pude procesar tu mensaje.';\n\nlet normalizedData;\ntry {\n  normalizedData = $('Normalizador de Payload').first().json;\n} catch (e) {\n  normalizedData = { userId: input.userId || 'unknown', provider: input.provider || 'evolution' };\n}\n\nconst provider = normalizedData.provider || 'evolution';\nconst userId = normalizedData.userId || 'unknown';\n\nfunction formatForEvolution(userId, responseText) {\n  return {\n    number: userId,\n    text: responseText,\n    options: { delay: 1200, presence: \"composing\" }\n  };\n}\n\nfunction formatForSendPulse(userId, responseText, botId) {\n  return {\n    bot_id: botId,\n    phone: userId.startsWith('+') ? userId : '+' + userId,\n    message: { type: \"text\", text: { body: responseText } }\n  };\n}\n\nconst safeResponse = agentResponse.length > 4096 ? agentResponse.substring(0, 4000) + '\\n\\n_(Mensaje truncado)_' : agentResponse;\n\nlet outboundPayload;\nif (provider === 'evolution') {\n  outboundPayload = formatForEvolution(userId, safeResponse);\n} else if (provider === 'sendpulse') {\n  outboundPayload = formatForSendPulse(userId, safeResponse, normalizedData.instanceId);\n} else {\n  outboundPayload = formatForEvolution(userId, safeResponse);\n}\n\nreturn [{\n  json: {\n    provider: provider,\n    userId: userId,\n    responseText: safeResponse,\n    outboundPayload: outboundPayload,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        80
+      ],
+      "id": "df87f96f-4006-4746-8d6e-78aafe39ca6a",
+      "name": "Format Output"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Extraer el payload entrante (contemplando si viene anidado en .body o directo)\nconst raw = $input.first().json;\nconst body = raw.body || raw;\nconst data = body.data || body;\nconst key = data.key || {};\nconst message = data.message || {};\n\n// 2. Guard Rail 1: Prevenir auto-respuestas si el mensaje fue enviado por vos mismo\nif (key.fromMe === true) {\n  return []; // Detiene la ejecución inmediatamente\n}\n\n// 3. Guard Rail 2: Ignorar grupos de WhatsApp\nconst remoteJid = key.remoteJid || '';\nif (remoteJid.endsWith('@g.us')) {\n  return [];\n}\n\n// 4. Si viene de Evolution API\nif (body.data || body.event === 'messages.upsert' || key.remoteJid) {\n  // Extraer texto según el tipo de mensaje de Baileys/Evolution\n  let text = message.conversation || \n             message.extendedTextMessage?.text || \n             message.imageMessage?.caption || \n             message.videoMessage?.caption || '';\n             \n  let type = 'text';\n  let mediaUrl = null;\n  let mimeType = null;\n  \n  if (message.imageMessage) {\n    type = 'image';\n    mimeType = message.imageMessage.mimetype;\n  } else if (message.audioMessage) {\n    type = 'audio';\n    mimeType = message.audioMessage.mimetype;\n  }\n\n  // Si no hay texto ni multimedia soportada (por ejemplo, sticker o reacción), descartar\n  if (!text.trim() && type === 'text') {\n    return [];\n  }\n\n  // Extraer número de teléfono limpio\n  const senderNumber = remoteJid.replace('@s.whatsapp.net', '');\n\n  return [{\n    json: {\n      userId: senderNumber,\n      senderJid: remoteJid,\n      userName: data.pushName || 'Usuario',\n      messageType: type,\n      messageContent: text,\n      mediaUrl: mediaUrl,\n      mediaCaption: message.imageMessage?.caption || null,\n      mediaMimeType: mimeType,\n      timestamp: new Date().toISOString(),\n      messageId: key.id || null,\n      fromMe: false,\n      instanceId: body.instance || 'bot-whatsapp',\n      provider: 'evolution',\n      rawPayload: body\n    }\n  }];\n}\n\n// 5. Fallback por si llega otro proveedor\nreturn [{\n  json: {\n    userId: 'unknown',\n    userName: 'Unknown',\n    messageType: 'unknown',\n    messageContent: '[Proveedor no reconocido]',\n    provider: 'unknown',\n    rawPayload: body\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        240
+      ],
+      "id": "f4a7c270-f01f-436b-a82c-1e61b20a2d44",
+      "name": "Normalizador de Payload"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "2fe395f8-4f3d-4e76-9b5b-114982427564"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Texto"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "aa3fe1ca-304d-46fb-9094-132019577a47",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Imagen"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "eeb108b8-6353-4f8c-a1f9-dc4536c2bee6",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "audio",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Audio"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -480,
+        224
+      ],
+      "id": "8adfe7de-7a76-4449-b4d1-f480d8b8dcbf",
+      "name": "Router"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.messageContent }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        0,
+        -32
+      ],
+      "id": "99219388-afb6-457b-b719-408a81f6ca12",
+      "name": "Agente IA"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Normalizador de Payload').first().json.userId }}",
+        "contextWindowLength": 20
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        96,
+        240
+      ],
+      "id": "ca2ef9cb-49e8-4857-ae48-dd5aef718ea5",
+      "name": "Memory"
+    },
+    {
+      "parameters": {
+        "description": "Consulta la disponibilidad y stock de un producto en el inventario. El input debe ser el nombre del producto a buscar.",
+        "jsCode": "const nombreProducto = (query || '').toLowerCase().trim();\n\nif (!nombreProducto) {\n  return 'No se especificó ningún producto para consultar.';\n}\n\nconst inventario = {\n  'crema facial': { disponible: true, cantidad: 25, precio: 45.00 },\n  'serum vitamina c': { disponible: true, cantidad: 12, precio: 65.00 },\n  'protector solar': { disponible: true, cantidad: 50, precio: 35.00 },\n  'mascarilla hidratante': { disponible: false, cantidad: 0, precio: 28.00 }\n};\n\nlet producto = null;\nlet nombreEncontrado = '';\n\nfor (const [nombre, datos] of Object.entries(inventario)) {\n  if (nombre.includes(nombreProducto) || nombreProducto.includes(nombre)) {\n    producto = datos;\n    nombreEncontrado = nombre;\n    break;\n  }\n}\n\nif (!producto) {\n  return `No encontramos \"${nombreProducto}\". Productos disponibles: ${Object.keys(inventario).join(', ')}.`;\n}\n\nreturn producto.disponible\n  ? `SI HAY STOCK de \"${nombreEncontrado}\". Quedan ${producto.cantidad} unidades. Precio: $${producto.precio}.`\n  : `NO HAY STOCK de \"${nombreEncontrado}\". Precio de referencia: $${producto.precio}.`;"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        144,
+        400
+      ],
+      "id": "ee03a95b-7faf-4793-81ef-b6cac8103759",
+      "name": "Consultar Stock"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst messageType = input.messageType || 'unknown';\nconst userName = input.userName || 'Usuario';\n\nconst fallbackMessages = {\n  document: `¡Hola ${userName}! 📄 Recibimos tu documento. Por el momento procesamos texto, imágenes y mensajes de voz.`,\n  sticker: `¡${userName}! 😄 No puedo interpretar stickers todavía. Por favor escríbeme un mensaje de texto.`,\n  video: `¡Hola ${userName}! 🎥 Por ahora no procesamos videos directamente, pero cuéntame de qué se trata por texto.`,\n  unknown: `¡Hola ${userName}! 🤔 No pudimos procesar este tipo de mensaje. Intenta enviando texto, imagen o audio.`\n};\n\nconst fallbackResponse = fallbackMessages[messageType] || fallbackMessages['unknown'];\n\nreturn [{\n  json: {\n    ...input,\n    fallbackResponse: fallbackResponse,\n    output: fallbackResponse,\n    isFallback: true\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        528
+      ],
+      "id": "3723afef-d933-4d22-9442-cd3afd3007f3",
+      "name": "Fallback Handler"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "evolution",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "899d5267-2d87-4c4a-9d16-888f8b9638ae"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Evolution API"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "68781d03-08c3-4977-8f36-676e44ec8458",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "sendpulse",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Send Pulse"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        368,
+        352
+      ],
+      "id": "7aad1c32-dddd-45b5-943b-77788e24c487",
+      "name": "Selector de Proveedor"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconsole.log('--- REGISTRO DE SALIDA ---');\nconsole.log('Proveedor:', input.provider);\nconsole.log('Usuario:', input.userId);\nconsole.log('Respuesta:', input.responseText);\nconsole.log('Timestamp:', input.timestamp);\n\nreturn [{ json: { status: 'success', loggedAt: new Date().toISOString() } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        352
+      ],
+      "id": "e6463e4f-8a9f-4b98-be40-524b65e378fe",
+      "name": "Log & Fin"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nreturn [{\n  json: {\n    ...input,\n    prompt: input.text || \"Analiza esta imagen y describe detalladamente su contenido o comprobante.\",\n    mediaType: \"image\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        224
+      ],
+      "id": "424a4499-1bfb-4e5a-b4d2-99535f3c472c",
+      "name": "Procesador de Imagen"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nreturn [{\n  json: {\n    ...input,\n    prompt: input.text || \"AUDIO DEL USUARIO (Analiza la transcripción o el gasto mencionado)\",\n    mediaType: \"audio\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        368
+      ],
+      "id": "40b2a73f-ede3-44cf-aaa4-f0055e65d489",
+      "name": "Transcriptor de Audio"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://TU_DOMINIO_O_IP:8080/message/sendText/bot-whatsapp",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "TU_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.outboundPayload.number }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.outboundPayload.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        592,
+        240
+      ],
+      "id": "b22f2a40-e9d5-48b1-b972-f7ae98e4a4b8",
+      "name": "Evolution Sender"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sendpulse.com/chatbots/messengers/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer REEMPLAZAR_POR_TU_TOKEN_SENDPULSE"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.outboundPayload) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        592,
+        448
+      ],
+      "id": "f09d36b6-dd15-4ee4-8f24-5eb64cfc257b",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        240
+      ],
+      "id": "4262bd10-ec79-465a-a5e5-a0d2d8fc0dc5",
+      "name": "Gemini",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalizador de Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizador de Payload": {
+      "main": [
+        [
+          {
+            "node": "Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router": {
+      "main": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Procesador de Imagen",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transcriptor de Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fallback Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente IA": {
+      "main": [
+        [
+          {
+            "node": "Format Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar Stock": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Handler": {
+      "main": [
+        [
+          {
+            "node": "Format Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Output": {
+      "main": [
+        [
+          {
+            "node": "Selector de Proveedor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesador de Imagen": {
+      "main": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcriptor de Audio": {
+      "main": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Selector de Proveedor": {
+      "main": [
+        [
+          {
+            "node": "Evolution Sender",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Log & Fin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evolution Sender": {
+      "main": [
+        [
+          {
+            "node": "Log & Fin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente IA",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "58ac7f46-cce5-4436-98dc-36e740f330bc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2fed011a8d0cfe35d8bfb57efca96c4584daaf733f55b81d94ebed5bd8387790"
+  },
+  "nodeGroups": [],
+  "id": "iCAg9wlkDZKkvfqU",
+  "tags": []
+}
